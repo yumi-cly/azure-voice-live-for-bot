@@ -1,0 +1,56 @@
+name: Deploy to Azure Container Apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - app/**
+      - static/**
+      - scripts/**
+      - Dockerfile
+      - requirements.txt
+      - .github/workflows/deploy-container-app.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+  AZURE_CONTAINER_APP_ENVIRONMENT: ${{ vars.AZURE_CONTAINER_APP_ENVIRONMENT }}
+  AZURE_CONTAINER_REGISTRY: ${{ vars.AZURE_CONTAINER_REGISTRY }}
+  IMAGE_NAME: azure-voice-live-for-bot
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and deploy Container App
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          appSourcePath: ${{ github.workspace }}
+          dockerfilePath: Dockerfile
+          acrName: ${{ env.AZURE_CONTAINER_REGISTRY }}
+          containerAppName: ${{ env.AZURE_CONTAINER_APP_NAME }}
+          containerAppEnvironment: ${{ env.AZURE_CONTAINER_APP_ENVIRONMENT }}
+          resourceGroup: ${{ env.AZURE_RESOURCE_GROUP }}
+          imageToBuild: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          targetPort: 8000
+          ingress: external
+          environmentVariables: >-
+            PORT=8000
+            WEB_ALLOWED_ORIGINS=*

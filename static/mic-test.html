@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Microphone Test</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", sans-serif;
+        background: #0f172a;
+        color: #e5e7eb;
+      }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        margin: 0;
+        place-items: center;
+      }
+
+      main {
+        width: min(720px, calc(100vw - 40px));
+        border: 1px solid #334155;
+        border-radius: 16px;
+        background: #1f2937;
+        padding: 28px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+      }
+
+      button {
+        border: 0;
+        border-radius: 12px;
+        background: #2563eb;
+        color: white;
+        cursor: pointer;
+        font-size: 16px;
+        font-weight: 700;
+        padding: 12px 18px;
+      }
+
+      .meter {
+        height: 18px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #111827;
+        margin: 22px 0 12px;
+      }
+
+      #bar {
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #22c55e, #facc15, #ef4444);
+        transition: width 80ms linear;
+      }
+
+      pre {
+        min-height: 150px;
+        white-space: pre-wrap;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        background: #111827;
+        color: #bfdbfe;
+        padding: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Microphone Test</h1>
+      <p>Speak into the headset microphone. If the browser receives audio, the meter and RMS/peak numbers will move.</p>
+      <button id="startBtn" type="button">Start 8 second test</button>
+      <div class="meter" aria-label="Microphone level meter"><div id="bar"></div></div>
+      <pre id="result">Waiting to start...</pre>
+    </main>
+
+    <script>
+      const startBtn = document.getElementById("startBtn");
+      const resultEl = document.getElementById("result");
+      const barEl = document.getElementById("bar");
+
+      function render(payload) {
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      async function listDevices() {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        return devices.map((device) => ({
+          kind: device.kind,
+          label: device.label || "(label hidden until permission is granted)",
+          deviceId: device.deviceId ? "present" : "",
+        }));
+      }
+
+      async function runMicTest() {
+        startBtn.disabled = true;
+        render({ status: "requesting microphone permission..." });
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+          render({ ok: false, error: "getUserMedia is not available." });
+          startBtn.disabled = false;
+          return;
+        }
+
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+            },
+            video: false,
+          });
+        } catch (error) {
+          render({
+            ok: false,
+            error: error.name,
+            message: error.message,
+            devices: await listDevices().catch((deviceError) => [{ error: deviceError.message }]),
+          });
+          startBtn.disabled = false;
+          return;
+        }
+
+        const context = new (window.AudioContext || window.webkitAudioContext)();
+        const source = context.createMediaStreamSource(stream);
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 1024;
+        source.connect(analyser);
+
+        const data = new Uint8Array(analyser.fftSize);
+        const samples = [];
+        const startedAt = Date.now();
+        const devices = await listDevices().catch((error) => [{ error: error.message }]);
+
+        function tick() {
+          analyser.getByteTimeDomainData(data);
+          let sumSquares = 0;
+          let peak = 0;
+          for (const value of data) {
+            const centered = (value - 128) / 128;
+            sumSquares += centered * centered;
+            peak = Math.max(peak, Math.abs(centered));
+          }
+
+          const rms = Math.sqrt(sumSquares / data.length);
+          samples.push({ rms, peak });
+          barEl.style.width = `${Math.min(100, Math.round(peak * 100))}%`;
+
+          const maxRms = Math.max(...samples.map((sample) => sample.rms));
+          const avgRms = samples.reduce((sum, sample) => sum + sample.rms, 0) / samples.length;
+          const maxPeak = Math.max(...samples.map((sample) => sample.peak));
+          render({
+            ok: true,
+            status: Date.now() - startedAt < 8000 ? "listening..." : "finished",
+            likelyReceivingAudio: maxRms > 0.01 || maxPeak > 0.08,
+            maxRms: Number(maxRms.toFixed(5)),
+            avgRms: Number(avgRms.toFixed(5)),
+            maxPeak: Number(maxPeak.toFixed(5)),
+            devices,
+          });
+
+          if (Date.now() - startedAt < 8000) {
+            window.requestAnimationFrame(tick);
+            return;
+          }
+
+          stream.getTracks().forEach((track) => track.stop());
+          context.close();
+          startBtn.disabled = false;
+        }
+
+        tick();
+      }
+
+      startBtn.addEventListener("click", runMicTest);
+    </script>
+  </body>
+</html>

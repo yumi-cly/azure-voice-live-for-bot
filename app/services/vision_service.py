@@ -1,0 +1,134 @@
+import json
+import re
+from time import perf_counter
+
+import httpx
+
+from app.config import get_settings
+from app.exceptions import DemoAppError
+from app.services.trace_store import record_trace
+
+
+def _responses_url(endpoint: str) -> str:
+    trimmed = endpoint.rstrip("/")
+    if trimmed.endswith("/responses"):
+        return trimmed
+    if trimmed.endswith("/openai/v1"):
+        return f"{trimmed}/responses"
+    return f"{trimmed}/openai/v1/responses"
+
+
+def _extract_output_text(payload: dict) -> str:
+    if isinstance(payload.get("output_text"), str) and payload["output_text"].strip():
+        return payload["output_text"].strip()
+
+    for item in payload.get("output") or []:
+        for content in item.get("content") or []:
+            text = content.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return ""
+
+
+def _parse_vision_json(text: str) -> dict:
+    json_text = re.sub(r"^```json\s*|^```\s*|```$", "", text.strip(), flags=re.IGNORECASE)
+    try:
+        parsed = json.loads(json_text)
+    except json.JSONDecodeError:
+        return {
+            "summary": text.strip(),
+            "suggested_reply": f"我观察到：{text.strip()}",
+            "objects": [],
+        }
+
+    summary = str(parsed.get("summary") or "我看到了前方环境，但还需要你进一步确认细节。").strip()
+    suggested_reply = str(parsed.get("suggested_reply") or parsed.get("suggestedReply") or f"我观察到：{summary}").strip()
+    objects = parsed.get("objects") if isinstance(parsed.get("objects"), list) else []
+    return {
+        "summary": summary,
+        "suggested_reply": suggested_reply,
+        "objects": [str(item) for item in objects[:8]],
+    }
+
+
+async def analyze_camera_frame(image_base64: str, question: str, user_id: str = "demo-user") -> dict:
+    settings = get_settings()
+    if not image_base64.startswith("data:image/"):
+        raise DemoAppError("Camera frame must be a data:image URL.", status_code=400)
+    if not settings.foundry_project_endpoint:
+        raise DemoAppError("FOUNDRY_PROJECT_ENDPOINT is not configured.", status_code=400)
+    if not settings.foundry_api_key:
+        raise DemoAppError("FOUNDRY_API_KEY is not configured for vision analysis.", status_code=400)
+
+    model = settings.foundry_vision_deployment or settings.foundry_model_name or "gpt-5.4"
+    started_at = perf_counter()
+    prompt = (
+        "你是机器人助手，面向家庭陪伴、创客教育、编程学习和产品演示。\n"
+        "请观察这张机器人摄像头截图，回答用户问题。\n"
+        "重点描述前方环境里可见的主要物体，回答要适合语音播报。\n"
+        "请严格返回 JSON："
+        '{"summary":"一句话画面描述","objects":["物体1","物体2"],"suggested_reply":"机器人可以对用户说的话"}\n'
+        f"用户问题：{question}"
+    )
+
+    async with httpx.AsyncClient(timeout=45) as client:
+        response = await client.post(
+            _responses_url(settings.foundry_project_endpoint),
+            headers={
+                "Content-Type": "application/json",
+                "api-key": settings.foundry_api_key,
+            },
+            json={
+                "model": model,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {"type": "input_image", "image_url": image_base64, "detail": "low"},
+                        ],
+                    }
+                ],
+                "max_output_tokens": 400,
+            },
+        )
+
+    duration_ms = round((perf_counter() - started_at) * 1000)
+    if response.status_code >= 400:
+        raise DemoAppError(
+            f"Foundry vision request failed: HTTP {response.status_code} {response.text[:500]}",
+            status_code=502,
+        )
+
+    raw_text = _extract_output_text(response.json())
+    if not raw_text:
+        raise DemoAppError("Foundry vision response did not include output text.", status_code=502)
+
+    parsed = _parse_vision_json(raw_text)
+    result = {
+        "ok": True,
+        "tool": "scan_environment",
+        "model": model,
+        "user_id": user_id,
+        "question": question,
+        "summary": parsed["summary"],
+        "objects": parsed["objects"],
+        "suggested_reply": parsed["suggested_reply"],
+        "actions": [
+            {
+                "name": "scan_environment",
+                "target": "front_area",
+                "status": "completed",
+            }
+        ],
+        "duration_ms": duration_ms,
+        "raw_model_text": raw_text,
+    }
+    record_trace(
+        channel="grounding",
+        kind="custom_tool",
+        title="Vision tool scan_environment",
+        message=parsed["summary"],
+        payload=result,
+    )
+    return result

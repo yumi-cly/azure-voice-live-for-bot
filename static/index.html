@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Azure Voice Live for Bot</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260626-63" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark">AI</span>
+          <div>
+            <h1>Azure Voice Live for Bot</h1>
+            <p>Voice Live Agent Mode + Foundry Hosted Agent + tools</p>
+          </div>
+        </div>
+        <div class="status-strip">
+          <div class="status-chip">
+            <span class="dot" id="healthDot"></span>
+            <span>Broker</span>
+            <strong id="healthState">unchecked</strong>
+          </div>
+          <div class="status-chip">
+            <span>Voice Session</span>
+            <strong id="sessionState">not created</strong>
+          </div>
+          <div class="status-chip">
+            <span>Conversation</span>
+            <strong id="conversationState">none</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <aside class="sidebar">
+          <section class="panel">
+            <div class="panel-title horizontal">
+              <h2>Configuration</h2>
+              <button id="configToggleBtn" class="panel-toggle secondary" title="Collapse configuration">^</button>
+            </div>
+
+            <div id="configBody" class="config-body">
+              <div class="field">
+                <label for="modelArchitecture">Model Architecture</label>
+                <select id="modelArchitecture">
+                  <option value="llm-realtime">LLM Realtime</option>
+                  <option value="llm-tts">LLM + TTS</option>
+                  <option value="asr-llm-tts">ASR + LLM + TTS</option>
+                </select>
+                <p id="architectureHint" class="field-help">One realtime model handles speech input, reasoning, and speech output.</p>
+              </div>
+
+              <div id="asrModelField" class="field combo-field">
+                <label for="asrModelName">Speech recognition model</label>
+                <select id="asrModelName">
+                  <option value="azure-speech">azure-speech</option>
+                </select>
+              </div>
+
+              <div id="modelNameField" class="field combo-field">
+                <label for="modelName">Model</label>
+                <select id="modelName">
+                  <option value="gpt-realtime">gpt-realtime</option>
+                  <option value="gpt-realtime-mini">gpt-realtime-mini</option>
+                  <option value="gpt-5.4">gpt-5.4</option>
+                  <option value="gpt-4.1">gpt-4.1</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label for="agentNameView">Foundry Agent</label>
+                <input id="agentNameView" value="avlb-bot-agent" readonly />
+              </div>
+
+              <div id="voiceNameField" class="field combo-field">
+                <label for="voiceName">Voice</label>
+                <select id="voiceName">
+                  <option value="zh-CN-Xiaoxiao:DragonHDFlashLatestNeural">Xiaoxiao Dragon HD Flash Latest</option>
+                </select>
+              </div>
+
+              <div class="voice-combo">
+                <span id="comboAsrStep">ASR</span>
+                <span id="comboLlmStep">LLM</span>
+                <span id="comboTtsStep">TTS</span>
+              </div>
+
+              <div class="auth-note">
+                <strong>Auth model</strong>
+                <span>Browser never sees endpoint keys. The broker reads .env locally and uses Entra / Managed Identity for Voice Live Agent Mode.</span>
+              </div>
+
+              <label class="switch-row" for="enableWebSearch">
+                <input id="enableWebSearch" type="checkbox" />
+                <span>Agent Web Tool</span>
+                <strong>Foundry Agent</strong>
+              </label>
+
+              <button id="advancedToggleBtn" class="advanced-toggle secondary">Advanced Settings</button>
+
+              <div id="advancedSettings" class="advanced-settings">
+                <div class="field">
+                  <label for="instructionsView">Instructions</label>
+                  <textarea id="instructionsView">You are a helpful embodied robot voice assistant. Use Foundry IQ knowledge base evidence first for internal document questions. Use the Foundry Agent web tool when current public information is needed.</textarea>
+                </div>
+
+                <div class="field">
+                  <label for="vadThreshold">VAD Threshold</label>
+                  <input id="vadThreshold" value="0.26" />
+                </div>
+
+                <div class="field">
+                  <label for="sessionJson">Session JSON</label>
+                  <textarea id="sessionJson" class="session-json">{
+  "modalities": ["text", "audio"],
+  "mode": "voice-live-agent-mode",
+  "model_architecture": "llm-realtime",
+  "model": "gpt-realtime",
+  "agent": "avlb-bot-agent",
+  "voice": "zh-CN-Xiaoxiao:DragonHDFlashLatestNeural",
+  "input_audio_format": "pcm16",
+  "output_audio_format": "pcm16",
+  "input_audio_transcription": {
+    "model": "azure-speech",
+    "language": "zh"
+  },
+  "turn_detection": {
+    "type": "azure_semantic_vad",
+    "threshold": 0.26,
+    "prefix_padding_ms": 300,
+    "silence_duration_ms": 220
+  }
+}</textarea>
+                </div>
+              </div>
+            </div>
+
+            <div class="command-grid">
+              <button id="pingBtn" class="secondary">Check broker</button>
+            </div>
+            <p id="configOutput" class="muted-line config-status">Loading broker configuration...</p>
+          </section>
+
+          <input id="userId" type="hidden" value="demo-user" />
+
+        </aside>
+
+        <section class="main-column">
+          <section class="chat-panel panel">
+            <div class="chat-log" id="messages" aria-live="polite"></div>
+            <div class="voice-dock">
+              <div class="voice-orb" id="voiceOrb">
+                <span id="voiceMode">Ready</span>
+              </div>
+              <div class="wave-shell" id="voiceWave">
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+              </div>
+              <p id="voiceLiveText" class="voice-live-text">Start voice, then speak when ready.</p>
+              <div id="cameraPanel" class="camera-panel hidden">
+                <div id="cameraDragHandle" class="camera-drag-handle" title="Drag camera window">
+                  <span>Camera View</span>
+                  <strong id="cameraDragHint">drag</strong>
+                </div>
+                <video id="cameraVideo" autoplay playsinline muted></video>
+                <canvas id="cameraCanvas" hidden></canvas>
+                <div class="camera-actions">
+                  <button id="analyzeCameraBtn" class="secondary" type="button">Analyze current view</button>
+                  <button id="stopCameraBtn" class="secondary" type="button">Stop</button>
+                </div>
+                <p id="cameraStatus" class="muted-line">Camera is off.</p>
+              </div>
+              <div class="voice-controls" aria-label="Voice controls">
+                <button id="cameraBtn" class="control-btn camera-btn" type="button" title="Start camera" aria-label="Start camera">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h7A2.5 2.5 0 0 1 16 7.5v.85l2.86-1.43A1.1 1.1 0 0 1 20.5 7.9v8.2a1.1 1.1 0 0 1-1.64.98L16 15.65v.85A2.5 2.5 0 0 1 13.5 19h-7A2.5 2.5 0 0 1 4 16.5v-9Z" />
+                  </svg>
+                  <span>Camera</span>
+                </button>
+                <button id="micBtn" class="control-btn mic-btn" type="button" title="Start voice conversation" aria-label="Start voice conversation">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4.75 10.25a.75.75 0 0 1 .75.75v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 1 .75-.75Zm3 4.5A.75.75 0 0 0 8.5 14V8a.75.75 0 0 0-1.5 0v6c0 .41.34.75.75.75Zm3.5 2.25a.75.75 0 0 0 .75-.75V5.75a.75.75 0 0 0-1.5 0v10.5c0 .41.34.75.75.75Zm3.5-2.25a.75.75 0 0 0 .75-.75V8a.75.75 0 0 0-1.5 0v6c0 .41.34.75.75.75Zm3-3a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 0-1.5 0v2c0 .41.34.75.75.75Z" />
+                  </svg>
+                  <span id="micBtnLabel">Start voice</span>
+                </button>
+                <button id="stopVoiceBtn" class="control-btn stop-btn" type="button" disabled title="Stop voice conversation" aria-label="Stop voice conversation">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7.05 5.64a1 1 0 0 0-1.41 1.41L10.59 12l-4.95 4.95a1 1 0 1 0 1.41 1.41L12 13.41l4.95 4.95a1 1 0 0 0 1.41-1.41L13.41 12l4.95-4.95a1 1 0 0 0-1.41-1.41L12 10.59 7.05 5.64Z" />
+                  </svg>
+                  <span>End</span>
+                </button>
+              </div>
+              <p id="voiceStatus">Click the microphone to start continuous voice conversation.</p>
+              <p class="voice-hint">Voice Live handles all assistant speech. Use the red button to stop.</p>
+            </div>
+          </section>
+
+          <section class="action-monitor-panel panel">
+            <div class="panel-title horizontal collapsible-title">
+              <h2>Action Monitor</h2>
+              <button id="toolsToggleBtn" class="panel-toggle secondary" title="Collapse action monitor">^</button>
+            </div>
+
+            <div id="toolsBody" class="panel-body">
+              <div class="action-monitor">
+                <div class="action-row">
+                  <span>Wave</span>
+                  <strong id="waveActionStatus">idle</strong>
+                </div>
+                <div class="action-row">
+                  <span>Light</span>
+                  <strong id="lightActionStatus">off</strong>
+                </div>
+                <div class="action-row">
+                  <span>Brightness</span>
+                  <strong id="brightnessActionStatus">55%</strong>
+                </div>
+                <div class="action-row">
+                  <span>Last action</span>
+                  <strong id="lastActionStatus">none</strong>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="stats-panel panel">
+            <div class="panel-title horizontal collapsible-title">
+              <h2>Statistics</h2>
+              <div class="button-row">
+                <button id="statsToggleBtn" class="panel-toggle secondary" title="Expand statistics">v</button>
+                <button id="exportMetricsBtn" class="secondary">Export metrics</button>
+                <button id="resetMetricsBtn" class="secondary">Reset</button>
+              </div>
+            </div>
+
+            <div id="statsBody" class="panel-body collapsed">
+              <div class="stats-block">
+                <div class="stats-title">Token Usage</div>
+                <div class="stats-grid">
+                  <div class="stat-cell">
+                    <span>Input Text</span>
+                    <strong id="statInputTextTokens">0 token</strong>
+                  </div>
+                  <div class="stat-cell">
+                    <span>Text Cache Rate</span>
+                    <strong id="statTextCacheRate">0.0%</strong>
+                  </div>
+                  <div class="stat-cell">
+                    <span>Output Text</span>
+                    <strong id="statOutputTextTokens">0 token</strong>
+                  </div>
+                  <div class="stat-cell">
+                    <span>Total Tokens</span>
+                    <strong id="statTotalTokens">0 token</strong>
+                  </div>
+                  <div class="stat-cell">
+                    <span>Voice Captures</span>
+                    <strong id="statVoiceTurns">0</strong>
+                  </div>
+                  <div class="stat-cell">
+                    <span>Total Turns</span>
+                    <strong id="statTotalTurns">0</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div class="stats-block">
+                <div class="stats-title">Voice Input -> Agent Output Latency (ms)</div>
+                <div class="stats-grid latency-grid">
+                  <div class="stat-cell">
+                    <span>Min</span>
+                    <strong id="statVoiceMin">0</strong>
+                  </div>
+                  <div class="stat-cell">
+                    <span>Avg</span>
+                    <strong id="statVoiceAvg">0</strong>
+                  </div>
+                  <div class="stat-cell">
+                    <span>Max</span>
+                    <strong id="statVoiceMax">0</strong>
+                  </div>
+                  <div class="stat-cell">
+                    <span>P90</span>
+                    <strong id="statVoiceP90">0</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div class="stats-block">
+                <div class="stats-title">Service Latency (latest / avg ms)</div>
+                <div class="service-grid">
+                  <div class="service-row">
+                    <span>Voice Live Connect</span>
+                    <strong id="statVoiceSessionLatency">0 / 0</strong>
+                  </div>
+                  <div class="service-row">
+                    <span>Foundry Agent</span>
+                    <strong id="statAgentLatency">0 / 0</strong>
+                  </div>
+                  <div class="service-row">
+                    <span>Foundry IQ</span>
+                    <strong id="statKbLatency">0 / 0</strong>
+                  </div>
+                  <div class="service-row">
+                    <span>Custom Tools</span>
+                    <strong id="statToolLatency">0 / 0</strong>
+                  </div>
+                  <div class="service-row">
+                    <span>Agentic Chain</span>
+                    <strong id="statDemoLatency">0 / 0</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="lower-grid">
+            <section class="panel">
+              <div class="panel-title">
+                <h2>Grounding Result</h2>
+              </div>
+              <pre id="searchOutput">Foundry IQ, web search, and tool results will appear here.</pre>
+            </section>
+
+            <section class="panel events-panel">
+              <div class="panel-title">
+                <h2>Event Log</h2>
+              </div>
+              <ul id="events" class="log-list"></ul>
+            </section>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js?v=20260626-71" defer></script>
+  </body>
+</html>
