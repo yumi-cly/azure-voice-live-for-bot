@@ -9,7 +9,6 @@ const searchOutputEl = document.getElementById("searchOutput");
 const userIdEl = document.getElementById("userId");
 const chatQuestionEl = document.getElementById("chatQuestion");
 const enableWebSearchEl = document.getElementById("enableWebSearch");
-const modelArchitectureEl = document.getElementById("modelArchitecture");
 const modelNameEl = document.getElementById("modelName");
 const modelNameFieldEl = document.getElementById("modelNameField");
 const asrModelNameEl = document.getElementById("asrModelName");
@@ -18,7 +17,6 @@ const vadThresholdEl = document.getElementById("vadThreshold");
 const agentNameViewEl = document.getElementById("agentNameView");
 const voiceNameEl = document.getElementById("voiceName");
 const voiceNameFieldEl = document.getElementById("voiceNameField");
-const architectureHintEl = document.getElementById("architectureHint");
 const comboAsrStepEl = document.getElementById("comboAsrStep");
 const comboLlmStepEl = document.getElementById("comboLlmStep");
 const comboTtsStepEl = document.getElementById("comboTtsStep");
@@ -77,35 +75,7 @@ const toolState = {
   lastAction: "none",
 };
 
-const architectureProfiles = {
-  "llm-realtime": {
-    hint: "LLM Realtime: one realtime model handles speech input, reasoning, and speech output.",
-    models: ["gpt-realtime", "gpt-realtime-mini"],
-    defaultModel: "gpt-realtime",
-    showAsr: false,
-    showVoice: true,
-    activeSteps: ["LLM"],
-    outputMode: "realtime-audio",
-  },
-  "llm-tts": {
-    hint: "LLM + TTS: text LLM produces the answer, then Xiaoxiao TTS speaks it.",
-    models: ["gpt-5.4", "gpt-4.1"],
-    defaultModel: "gpt-5.4",
-    showAsr: false,
-    showVoice: true,
-    activeSteps: ["LLM", "TTS"],
-    outputMode: "azure-tts",
-  },
-  "asr-llm-tts": {
-    hint: "ASR + LLM + TTS: Azure Speech transcribes, Foundry Agent reasons, Xiaoxiao TTS speaks.",
-    models: ["gpt-5.4", "gpt-4.1"],
-    defaultModel: "gpt-5.4",
-    showAsr: true,
-    showVoice: true,
-    activeSteps: ["ASR", "LLM", "TTS"],
-    outputMode: "azure-speech-tts",
-  },
-};
+const AGENT_MODELS = ["gpt-5.4"];
 
 const metrics = {
   tokens: {
@@ -138,8 +108,6 @@ let voiceGreetingRequested = false;
 let voiceStopRequested = false;
 let playbackQueueTime = 0;
 let activeAudioSources = [];
-let fallbackAudio = null;
-let fallbackAudioUrl = "";
 let currentAssistantAudioText = "";
 let currentAssistantAudioChunks = 0;
 let currentAssistantResponseId = null;
@@ -263,7 +231,7 @@ function formatJson(value) {
 
 function formatKnowledgeResults(results) {
   if (!results?.length) {
-    return "No Foundry IQ snippets returned yet. Ask an internal document question after the Foundry IQ knowledge base is connected.";
+    return "Foundry IQ retrieval is handled inside the hosted Agent Knowledge configuration.";
   }
 
   return results
@@ -306,77 +274,54 @@ function setSelectOptions(selectEl, values) {
   }
 }
 
-function currentArchitectureProfile() {
-  return architectureProfiles[modelArchitectureEl.value] || architectureProfiles["llm-realtime"];
-}
-
 function updateArchitectureDisplay() {
-  const profile = currentArchitectureProfile();
-  setSelectOptions(modelNameEl, profile.models);
-  if (!profile.models.includes(modelNameEl.value)) {
-    modelNameEl.value = profile.defaultModel;
+  if (!AGENT_MODELS.includes(modelNameEl.value)) {
+    setSelectOptions(modelNameEl, AGENT_MODELS);
+    modelNameEl.value = "gpt-5.4";
   }
-
-  architectureHintEl.textContent = profile.hint;
-  asrModelFieldEl.classList.toggle("hidden", !profile.showAsr);
+  asrModelFieldEl.classList.toggle("hidden", false);
   modelNameFieldEl.classList.toggle("hidden", false);
-  voiceNameFieldEl.classList.toggle("hidden", !profile.showVoice);
-
-  const activeSteps = new Set(profile.activeSteps);
-  comboAsrStepEl.classList.toggle("active", activeSteps.has("ASR"));
-  comboLlmStepEl.classList.toggle("active", activeSteps.has("LLM"));
-  comboTtsStepEl.classList.toggle("active", activeSteps.has("TTS"));
+  voiceNameFieldEl.classList.toggle("hidden", false);
+  comboAsrStepEl.classList.add("active");
+  comboLlmStepEl.classList.add("active");
+  comboTtsStepEl.classList.add("active");
 }
 
 function updateSessionJson() {
   if (!sessionJsonEl) {
     return;
   }
-  const profile = currentArchitectureProfile();
   const sessionPreview = {
     mode: "voice-live-agent-mode",
-    model_architecture: modelArchitectureEl.value,
-    agent: agentNameViewEl.value,
-    agent_web_tool: enableWebSearchEl.checked,
-    turn_detection: {
-      type: "azure_semantic_vad",
-      threshold: currentVadThreshold(),
-      prefix_padding_ms: 300,
-      silence_duration_ms: 220,
+    voice_live_connect: {
+      agent_config: {
+        agent: agentNameViewEl.value,
+        agent_model: modelNameEl.value,
+        agent_web_tool: enableWebSearchEl.checked,
+      },
     },
-    tools_source: "foundry-agent-mcp-definition",
-    tools_expected: ["knowledge_base_retrieve", "scan_environment", "run_robot_action"],
-  };
-  if (profile.showAsr) {
-    sessionPreview.asr = {
-      model: asrModelNameEl.value,
-      language: "zh-CN",
-    };
-  }
-  sessionPreview.llm = {
-    model: modelNameEl.value,
-    hosted_agent: agentNameViewEl.value,
-  };
-  if (profile.showVoice) {
-    sessionPreview.tts = {
-      voice: voiceNameEl.value,
-      output_audio_format: "audio/mpeg",
-      output_mode: profile.outputMode,
-    };
-  }
-  if (modelArchitectureEl.value === "llm-realtime") {
-    sessionPreview.realtime = {
+    session_update: {
       modalities: ["text", "audio"],
-      model: modelNameEl.value,
-      voice: voiceNameEl.value,
+      input_audio_transcription: {
+        model: asrModelNameEl.value,
+        language: voiceNameEl.value.startsWith("zh-") ? "zh-CN" : "en-US",
+      },
+      voice: {
+        name: voiceNameEl.value,
+        type: "azure-standard",
+      },
       input_audio_format: "pcm16",
       output_audio_format: "pcm16",
-      input_audio_transcription: {
-        model: "azure-speech",
-        language: "zh",
+      turn_detection: {
+        type: "azure_semantic_vad",
+        threshold: currentVadThreshold(),
+        prefix_padding_ms: 300,
+        silence_duration_ms: 220,
       },
-    };
-  }
+    },
+    tools_source: "foundry-agent-mcp-definition",
+    tools_expected: ["scan_environment", "run_robot_action"],
+  };
   sessionJsonEl.value = JSON.stringify(
     sessionPreview,
     null,
@@ -385,7 +330,7 @@ function updateSessionJson() {
 }
 
 function renderGroundingResult({ knowledge = [], tool = null, tools = [] } = {}) {
-  const sections = [`Foundry IQ\n${formatKnowledgeResults(knowledge)}`];
+  const sections = [`Agent Knowledge\n${formatKnowledgeResults(knowledge)}`];
   const toolItems = tools.length ? tools : tool ? [tool] : [];
   if (toolItems.length) {
     sections.push(`Actions / Tools\n${formatToolResults(toolItems)}`);
@@ -404,12 +349,7 @@ function traceEventText(trace) {
 
 function mergeGroundingTrace(trace) {
   const payload = trace.payload || {};
-  if (trace.kind === "kb_search") {
-    traceState.knowledge = payload.results || [];
-    recordServiceLatency("kb", payload.duration_ms);
-  } else if (trace.kind === "kb_ingest") {
-    traceState.knowledge = [];
-  } else if (trace.kind === "custom_tool" || trace.kind === "agent_tool_event") {
+  if (trace.kind === "custom_tool" || trace.kind === "agent_tool_event") {
     traceState.tools = [payload, ...traceState.tools].slice(0, 6);
     if (payload.tool === "run_robot_action") {
       applyActionState(payload);
@@ -787,21 +727,8 @@ function stopAssistantPlayback() {
     }
   });
   activeAudioSources = [];
-  if (fallbackAudio) {
-    fallbackAudio.pause();
-    fallbackAudio.src = "";
-    fallbackAudio = null;
-  }
-  if (fallbackAudioUrl) {
-    URL.revokeObjectURL(fallbackAudioUrl);
-    fallbackAudioUrl = "";
-  }
   if (voiceAudioContext) {
     playbackQueueTime = voiceAudioContext.currentTime;
-  }
-  if ("speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.resume();
   }
 }
 
@@ -816,73 +743,6 @@ function cancelAssistantResponseForInterrupt() {
   currentAssistantMessageDomId = null;
   currentAssistantResponseInProgress = false;
   addEvent("assistant response cancelled by user speech");
-}
-
-async function speakTextFallback(text, reason = "Azure TTS fallback used because Voice Live sent no audio delta", onEnd = null) {
-  const fallbackText = String(text || "").trim();
-  if (!fallbackText) {
-    return false;
-  }
-
-  stopAssistantPlayback();
-
-  try {
-    const response = await fetch("/api/tts/synthesize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: fallbackText,
-        voice: voiceNameEl.value || "zh-CN-Xiaoxiao:DragonHDFlashLatestNeural",
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`Azure TTS failed: ${response.status}`);
-    }
-    const audioBlob = await response.blob();
-    fallbackAudioUrl = URL.createObjectURL(audioBlob);
-    fallbackAudio = new Audio(fallbackAudioUrl);
-    fallbackAudio.onended = () => {
-      if (onEnd) {
-        onEnd();
-      }
-      if (fallbackAudioUrl) {
-        URL.revokeObjectURL(fallbackAudioUrl);
-        fallbackAudioUrl = "";
-      }
-      fallbackAudio = null;
-    };
-    fallbackAudio.onerror = () => {
-      addEvent("Azure TTS audio playback error");
-      if (onEnd) {
-        onEnd();
-      }
-    };
-    await fallbackAudio.play();
-    addEvent(reason);
-    return true;
-  } catch (error) {
-    addEvent(`Azure TTS fallback failed: ${error.message}`);
-  }
-
-  if (!("speechSynthesis" in window)) {
-    return false;
-  }
-
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.resume();
-  const utterance = new SpeechSynthesisUtterance(fallbackText);
-  utterance.lang = "zh-CN";
-  utterance.rate = 1;
-  utterance.pitch = 1;
-  utterance.volume = 1;
-  if (onEnd) {
-    utterance.onend = onEnd;
-    utterance.onerror = onEnd;
-  }
-
-  window.speechSynthesis.speak(utterance);
-  addEvent("browser speech fallback used after Azure TTS failed");
-  return true;
 }
 
 function requestVoiceLiveGreeting() {
@@ -902,10 +762,6 @@ function requestVoiceLiveGreeting() {
     }),
   );
   addEvent("Voice Live response.create sent; Foundry Agent instructions control the greeting");
-}
-
-function isCameraRequest(text) {
-  return /摄像头|画面|视频|视觉|识别|看到|看看|桌上|前方|周围|环境/.test(String(text || ""));
 }
 
 function sendVisionResultToVoiceLive(data, question) {
@@ -1287,7 +1143,7 @@ function handleVoiceLiveEvent(event) {
           addMessage("Assistant", currentAssistantAudioText.trim(), "voice-live-agent-mode", currentAssistantMessageDomId);
         }
         if (currentAssistantAudioChunks === 0) {
-          addEvent("voice live response had no audio delta; text displayed without fallback TTS");
+          addEvent("voice live response had no audio delta; text displayed only");
         }
       }
       if (voiceRoundTripStartedAt) {
@@ -1547,6 +1403,7 @@ async function analyzeCurrentCameraView(question = "看看桌上有什么？", o
   }
   if (options.sendToVoiceLive) {
     stopAssistantPlayback();
+    cancelAssistantResponseForInterrupt();
   }
   addEvent(options.source === "agent-tool-call" ? "Broker: executing scan_environment" : "Manual -> scan_environment");
   addEvent("Broker: captured current camera frame");
@@ -1630,37 +1487,8 @@ async function runAgentQuestion(question, source = "user") {
 }
 
 async function runDemoQuestion(question, source = "user") {
-  const startedAt = performance.now();
-  addMessage(source, question);
-  const data = await request("/api/demo/chat", {
-    method: "POST",
-    body: JSON.stringify({
-      user_id: userIdEl.value,
-      question,
-      conversation_id: currentConversationId(),
-      include_memory: false,
-      include_search: true,
-      top: 3,
-    }),
-  });
-  const timings = data.timings_ms || {};
-  recordServiceLatency("demo", data.duration_ms || timings.total || performance.now() - startedAt);
-  recordServiceLatency("agent", data.agent?.duration_ms || timings.agent);
-  recordServiceLatency("kb", timings.ai_search);
-  recordServiceLatency("tool", timings.tool);
-  recordUsage(data.agent?.usage);
-  recordTurn();
-  setConversationState(data.agent.conversation_id);
-  addMessage(
-    "Assistant",
-    data.answer,
-    `kb=${data.search.length} tool=${data.tool ? data.tool.tool : "none"}`,
-  );
-  renderGroundingResult({
-    knowledge: data.search,
-    tool: data.tool,
-  });
-  addEvent("full demo chain completed");
+  const data = await runAgentQuestion(question, source);
+  renderGroundingResult();
   return data;
 }
 
@@ -1696,7 +1524,9 @@ async function startVoiceCapture() {
     setVoiceMode("Connecting", "Opening microphone and Voice Live session...");
     const configUrl = new URL("/api/voice/config", window.location.href);
     configUrl.searchParams.set("voice", voiceNameEl.value);
-    configUrl.searchParams.set("language", voiceNameEl.value.startsWith("zh-") ? "zh" : "en");
+    configUrl.searchParams.set("asr_model", asrModelNameEl.value);
+    configUrl.searchParams.set("agent_model", modelNameEl.value);
+    configUrl.searchParams.set("language", voiceNameEl.value.startsWith("zh-") ? "zh-CN" : "en-US");
     configUrl.searchParams.set("vad_threshold", String(currentVadThreshold()));
     configUrl.searchParams.set("prefix_padding_ms", "300");
     configUrl.searchParams.set("silence_duration_ms", "220");
@@ -1825,17 +1655,26 @@ document.getElementById("pingBtn").addEventListener("click", async () => {
 async function loadBrokerConfig() {
   try {
     const data = await request("/api/config");
-    const agentWebToolActive = Boolean(data.features?.agentWebToolEnabled || data.serviceStatus?.agentWebToolConfigured);
-    const activeAgentName = data.resources.foundryVoiceAgentName || data.resources.foundryAgentName || "avlb-bot-agent";
-    const activeAgentVersion = data.resources.foundryVoiceAgentVersion;
-    enableWebSearchEl.checked = agentWebToolActive;
+    const agentToolsActive = Boolean(data.features?.agentToolsEnabled || data.serviceStatus?.foundryAgentConfigured);
+    const activeAgentName = data.resources.foundryAgentName || "avlb-bot-agent";
+    const activeAgentVersion = data.resources.foundryAgentVersion;
+    enableWebSearchEl.checked = agentToolsActive;
     enableWebSearchEl.disabled = true;
+    if (data.resources.voiceLiveAsrModel && [...asrModelNameEl.options].some((option) => option.value === data.resources.voiceLiveAsrModel)) {
+      asrModelNameEl.value = data.resources.voiceLiveAsrModel;
+    }
+    if (data.resources.voiceLiveAgentModel && [...modelNameEl.options].some((option) => option.value === data.resources.voiceLiveAgentModel)) {
+      modelNameEl.value = data.resources.voiceLiveAgentModel;
+    }
+    if (data.resources.voiceLiveTtsVoice && [...voiceNameEl.options].some((option) => option.value === data.resources.voiceLiveTtsVoice)) {
+      voiceNameEl.value = data.resources.voiceLiveTtsVoice;
+    }
     if (!modelNameEl.value) {
-      modelNameEl.value = "gpt-realtime";
+      modelNameEl.value = "gpt-5.4";
     }
     agentNameViewEl.value = activeAgentName;
     updateSessionJson();
-    configOutputEl.textContent = `Broker ready | agent=${activeAgentName}${activeAgentVersion ? `@${activeAgentVersion}` : ""} | Foundry IQ=${data.serviceStatus.foundryIqConfigured ? "ready" : "missing"} | agent web=${agentWebToolActive ? "active" : "not configured"} | mcp=${data.serviceStatus.mcpServerConfigured ? "configured" : "local only"} | voice auth=Entra`;
+    configOutputEl.textContent = `Broker ready | agent=${activeAgentName}${activeAgentVersion ? `@${activeAgentVersion}` : ""} | Foundry IQ=${data.serviceStatus.foundryIqConfigured ? "ready" : "missing"} | agent tools=${agentToolsActive ? "active" : "not configured"} | mcp=${data.serviceStatus.mcpServerConfigured ? "configured" : "local only"} | voice auth=Entra`;
     addEvent("broker config loaded");
   } catch (error) {
     configOutputEl.textContent = "Broker configuration unavailable. Check local .env or Azure identity permissions.";
@@ -1891,11 +1730,8 @@ advancedToggleBtnEl.addEventListener("click", () => {
   advancedSettingsEl.classList.toggle("open");
 });
 
-[modelArchitectureEl, modelNameEl, asrModelNameEl, voiceNameEl].forEach((element) => {
+[modelNameEl, asrModelNameEl, voiceNameEl].forEach((element) => {
   element.addEventListener("change", () => {
-    if (element === modelArchitectureEl) {
-      updateArchitectureDisplay();
-    }
     updateSessionJson();
   });
 });

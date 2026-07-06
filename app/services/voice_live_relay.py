@@ -18,6 +18,7 @@ from app.services.trace_store import record_trace
 
 VOICE_LIVE_PRIMARY_SCOPE = "https://ai.azure.com/.default"
 VOICE_LIVE_LEGACY_SCOPE = "https://cognitiveservices.azure.com/.default"
+SUPPORTED_ASR_MODELS = {"azure-speech", "mai-transcribe-1"}
 
 
 def _voice_live_host(endpoint: str) -> str:
@@ -36,15 +37,12 @@ def _agent_identifier() -> str:
     return settings.resolved_voice_agent_name
 
 
-def _agent_id() -> str:
-    settings = get_settings()
-    return settings.foundry_web_agent_id or settings.foundry_agent_id
-
-
 def voice_live_session_update(
     *,
     voice: str = "zh-CN-Xiaoxiao:DragonHDFlashLatestNeural",
-    language: str = "zh",
+    asr_model: str = "azure-speech",
+    agent_model: str = "gpt-5.4",
+    language: str = "zh-CN",
     vad_threshold: float = 0.26,
     prefix_padding_ms: int = 300,
     silence_duration_ms: int = 180,
@@ -52,6 +50,9 @@ def voice_live_session_update(
     vad_threshold = max(0.0, min(1.0, float(vad_threshold)))
     prefix_padding_ms = max(0, min(1000, int(prefix_padding_ms)))
     silence_duration_ms = max(100, min(1200, int(silence_duration_ms)))
+    normalized_asr_model = asr_model if asr_model in SUPPORTED_ASR_MODELS else "azure-speech"
+    normalized_language = language or ("zh-CN" if voice.startswith("zh-") else "en-US")
+    settings = get_settings()
 
     return {
         "type": "session.update",
@@ -66,7 +67,7 @@ def voice_live_session_update(
             "input_audio_sampling_rate": 24000,
             "input_audio_noise_reduction": {"type": "azure_deep_noise_suppression"},
             "input_audio_echo_cancellation": {"type": "server_echo_cancellation"},
-            "input_audio_transcription": {"model": "azure-speech", "language": language},
+            "input_audio_transcription": {"model": normalized_asr_model, "language": normalized_language},
             "turn_detection": {
                 "type": "azure_semantic_vad",
                 "threshold": vad_threshold,
@@ -88,7 +89,7 @@ def _build_voice_live_agent_url(access_token: str = "") -> str:
     agent_name = _agent_identifier()
     if not agent_name:
         raise ConfigurationError(
-            "FOUNDRY_WEB_AGENT_NAME/ID or FOUNDRY_AGENT_NAME/ID is required for Voice Live Agent Mode."
+            "FOUNDRY_AGENT_NAME is required for Voice Live Agent Mode."
         )
 
     host = _voice_live_host(endpoint)
@@ -104,9 +105,6 @@ def _build_voice_live_agent_url(access_token: str = "") -> str:
     ]
     if access_token:
         query.append(f"authorization=Bearer+{quote(access_token, safe='')}")
-    agent_id = _agent_id()
-    if agent_id and agent_id != agent_name:
-        query.append(f"agent-id={quote(agent_id, safe='')}")
     return f"wss://{host}/voice-live/realtime?{'&'.join(query)}"
 
 

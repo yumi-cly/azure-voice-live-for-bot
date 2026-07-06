@@ -7,9 +7,6 @@ param(
     [string]$FoundryProjectName = "",
     [string]$SearchServiceName = "",
     [string]$StorageAccountName = "",
-    [string]$CosmosAccountName = "",
-    [string]$CosmosDatabaseName = "voicebot",
-    [string]$CosmosContainerName = "memory",
     [string]$ContainerAppName = ""
 )
 
@@ -96,31 +93,6 @@ Add-RoleAssignment -Role "Search Index Data Reader" -Scope $searchScope
 if ($StorageAccountName) {
     $storageScope = "$base/Microsoft.Storage/storageAccounts/$StorageAccountName"
     Add-RoleAssignment -Role "Storage Blob Data Contributor" -Scope $storageScope
-}
-
-if ($CosmosAccountName) {
-    $cosmosRoleDefinitionId = az cosmosdb sql role definition list `
-        --resource-group $ResourceGroup `
-        --account-name $CosmosAccountName `
-        --query "[?roleName=='Cosmos DB Built-in Data Contributor'].id | [0]" `
-        --output tsv
-
-    $cosmosScope = "/dbs/$CosmosDatabaseName/colls/$CosmosContainerName"
-    $existingCosmosRole = az cosmosdb sql role assignment list `
-        --resource-group $ResourceGroup `
-        --account-name $CosmosAccountName `
-        --query "[?principalId=='$principalId' && scope.ends_with(@, '$cosmosScope')].id | [0]" `
-        --output tsv
-
-    if (-not $existingCosmosRole) {
-        az cosmosdb sql role assignment create `
-            --resource-group $ResourceGroup `
-            --account-name $CosmosAccountName `
-            --scope $cosmosScope `
-            --principal-id $principalId `
-            --role-definition-id $cosmosRoleDefinitionId `
-            --output none
-    }
 }
 
 if ($ContainerAppName) {

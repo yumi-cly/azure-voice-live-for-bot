@@ -17,14 +17,12 @@ from app.services.agent_tools import (
     execute_agent_tool,
 )
 from app.services.azure_auth import get_foundry_credential
-from app.services.search_service import search_knowledge
 
 
 AGENTIC_INSTRUCTIONS = """
 You are an robot voice agent.
 Use the available tools to decide what evidence or action is needed before answering.
-For company or uploaded-document questions, call search_knowledge before answering.
-Call read_memory when user preferences, prior context, or cross-session continuity may matter.
+For company or uploaded-document questions, rely on the hosted Foundry Agent Knowledge configuration.
 Call run_robot_action for wave, light on/off, and brightness requests.
 Answer in concise Chinese by default. Use plain text only: no Markdown headings, no bold markers,
 no code fences, no tables, and no Markdown bullet syntax. Prefer short paragraphs or simple numbered
@@ -92,62 +90,9 @@ def _openai_client_for_agentic() -> tuple[Any, AIProjectClient | None, str]:
 
 
 def _summarize_tool_result(name: str, result: dict[str, Any]) -> dict[str, Any] | None:
-    if name in {"search_knowledge", "search_knowledge_base"}:
-        return {"kind": "knowledge", "results": result.get("results", [])}
-    if name == "read_memory":
-        return {"kind": "memory", **result}
     if name in {"get_robot_status", "run_robot_action"}:
         return {"kind": "custom_tool", **result}
     return None
-
-
-def _format_knowledge_evidence(results: list[dict[str, Any]]) -> str:
-    evidence_blocks: list[str] = []
-    for index, item in enumerate(results, start=1):
-        title = item.get("title") or item.get("source_file") or "knowledge"
-        source_file = item.get("source_file") or ""
-        page_number = item.get("page_number")
-        page_label = f", page {page_number}" if page_number else ""
-        preview = str(item.get("content_preview") or "").strip()
-        if not preview:
-            continue
-        source_label = f"{title}"
-        if source_file and source_file != title:
-            source_label = f"{title} / {source_file}"
-        evidence_blocks.append(f"[{index}] {source_label}{page_label}\n{preview}")
-    return "\n\n".join(evidence_blocks)
-
-
-def _build_grounded_agent_input(
-    question: str,
-    knowledge_results: list[dict[str, Any]],
-) -> str:
-    knowledge_evidence = _format_knowledge_evidence(knowledge_results)
-
-    context_sections: list[str] = []
-    if knowledge_evidence:
-        context_sections.append(
-            "Private knowledge base evidence from Azure AI Search. Prefer this for company or uploaded-document questions:\n"
-            f"{knowledge_evidence}"
-        )
-    if not context_sections:
-        context_sections.append("No broker-provided evidence was found for this turn.")
-
-    return f"""
-User question:
-{question}
-
-Policy:
-- Use private knowledge base evidence when it is relevant.
-- For current public information, rely on the hosted Foundry Agent's configured web tool instead of broker-side web search.
-
-Grounding context prepared by the broker:
-
-{chr(10).join(context_sections)}
-
-Answer requirements: respond in concise Chinese plain text. Do not use Markdown headings,
-bold markers, code fences, or tables. If evidence is insufficient, say what is missing.
-""".strip()
 
 
 def run_agentic_chat(request: AgentChatRequest) -> dict:
@@ -156,40 +101,13 @@ def run_agentic_chat(request: AgentChatRequest) -> dict:
     openai_client, project_client, mode = _openai_client_for_agentic()
     tool_events: list[dict[str, Any]] = []
     tool_results_by_kind: dict[str, Any] = {
-        "knowledge": [],
-        "memory": None,
         "custom_tool": None,
     }
     timings_ms: dict[str, int] = {
-        "memory": 0,
-        "ai_search": 0,
         "tool": 0,
     }
 
     agent_input = request.question
-    knowledge_results: list[dict[str, Any]] = []
-    if request.include_search:
-        search_top = max(1, min(int(request.top or 3), 8))
-        started_at = time.perf_counter()
-        knowledge_result = search_knowledge(request.question, top=search_top)
-        elapsed = round((time.perf_counter() - started_at) * 1000)
-        timings_ms["ai_search"] += elapsed
-
-        knowledge_results = knowledge_result.get("results", [])
-        tool_results_by_kind["knowledge"].extend(knowledge_results)
-        tool_events.append(
-            {
-                "name": "search_knowledge",
-                "arguments": {"query": request.question, "top": search_top, "stage": "pre_agent"},
-                "result": knowledge_result,
-                "duration_ms": elapsed,
-            }
-        )
-
-    agent_input = _build_grounded_agent_input(
-        request.question,
-        knowledge_results,
-    )
 
     request_payload: dict[str, Any] = {
         "input": agent_input,
@@ -234,20 +152,12 @@ def run_agentic_chat(request: AgentChatRequest) -> dict:
                     }
                 )
 
-                if name == "read_memory":
-                    timings_ms["memory"] += elapsed
-                elif name in {"search_knowledge", "search_knowledge_base"}:
-                    timings_ms["ai_search"] += elapsed
-                else:
-                    timings_ms["tool"] += elapsed
+                timings_ms["tool"] += elapsed
 
                 summary = _summarize_tool_result(name, result)
                 if summary:
                     kind = summary.pop("kind")
-                    if kind == "knowledge":
-                        tool_results_by_kind["knowledge"].extend(summary.get("results", []))
-                    else:
-                        tool_results_by_kind[kind] = summary
+                    tool_results_by_kind[kind] = summary
 
                 tool_outputs.append(
                     {
@@ -289,8 +199,7 @@ def run_agentic_chat(request: AgentChatRequest) -> dict:
                 "usage": _dump_optional_model(getattr(response, "usage", None)),
                 "duration_ms": agent_duration,
             },
-            "memory": tool_results_by_kind["memory"],
-            "search": tool_results_by_kind["knowledge"],
+            "search": [],
             "tool": tool_results_by_kind["custom_tool"],
             "tool_calls": tool_events,
             "timings_ms": timings_ms,

@@ -42,30 +42,18 @@
             </div>
 
             <div id="configBody" class="config-body">
-              <div class="field">
-                <label for="modelArchitecture">Model Architecture</label>
-                <select id="modelArchitecture">
-                  <option value="llm-realtime">LLM Realtime</option>
-                  <option value="llm-tts">LLM + TTS</option>
-                  <option value="asr-llm-tts">ASR + LLM + TTS</option>
-                </select>
-                <p id="architectureHint" class="field-help">One realtime model handles speech input, reasoning, and speech output.</p>
-              </div>
-
               <div id="asrModelField" class="field combo-field">
-                <label for="asrModelName">Speech recognition model</label>
+                <label for="asrModelName">ASR</label>
                 <select id="asrModelName">
                   <option value="azure-speech">azure-speech</option>
+                  <option value="mai-transcribe-1">mai-transcribe-1</option>
                 </select>
               </div>
 
               <div id="modelNameField" class="field combo-field">
-                <label for="modelName">Model</label>
+                <label for="modelName">Agent Model</label>
                 <select id="modelName">
-                  <option value="gpt-realtime">gpt-realtime</option>
-                  <option value="gpt-realtime-mini">gpt-realtime-mini</option>
                   <option value="gpt-5.4">gpt-5.4</option>
-                  <option value="gpt-4.1">gpt-4.1</option>
                 </select>
               </div>
 
@@ -75,9 +63,14 @@
               </div>
 
               <div id="voiceNameField" class="field combo-field">
-                <label for="voiceName">Voice</label>
+                <label for="voiceName">TTS</label>
                 <select id="voiceName">
                   <option value="zh-CN-Xiaoxiao:DragonHDFlashLatestNeural">Xiaoxiao Dragon HD Flash Latest</option>
+                  <option value="zh-CN-XiaoxiaoNeural">Xiaoxiao Neural</option>
+                  <option value="zh-CN-XiaoyiNeural">Xiaoyi Neural</option>
+                  <option value="zh-CN-YunxiNeural">Yunxi Neural</option>
+                  <option value="zh-CN-YunyangNeural">Yunyang Neural</option>
+                  <option value="en-US-Ava:DragonHDLatestNeural">Ava Dragon HD Latest</option>
                 </select>
               </div>
 
@@ -103,7 +96,7 @@
               <div id="advancedSettings" class="advanced-settings">
                 <div class="field">
                   <label for="instructionsView">Instructions</label>
-                  <textarea id="instructionsView">You are a helpful embodied robot voice assistant. Use Foundry IQ knowledge base evidence first for internal document questions. Use the Foundry Agent web tool when current public information is needed.</textarea>
+                  <textarea id="instructionsView">You are a helpful embodied robot voice assistant. Use the hosted Foundry Agent Knowledge configuration for internal document questions. Use the Foundry Agent web tool when current public information is needed.</textarea>
                 </div>
 
                 <div class="field">
@@ -112,25 +105,33 @@
                 </div>
 
                 <div class="field">
-                  <label for="sessionJson">Session JSON</label>
+                  <label for="sessionJson">Session Plan JSON</label>
                   <textarea id="sessionJson" class="session-json">{
-  "modalities": ["text", "audio"],
   "mode": "voice-live-agent-mode",
-  "model_architecture": "llm-realtime",
-  "model": "gpt-realtime",
-  "agent": "avlb-bot-agent",
-  "voice": "zh-CN-Xiaoxiao:DragonHDFlashLatestNeural",
-  "input_audio_format": "pcm16",
-  "output_audio_format": "pcm16",
-  "input_audio_transcription": {
-    "model": "azure-speech",
-    "language": "zh"
+  "voice_live_connect": {
+    "agent_config": {
+      "agent": "avlb-bot-agent",
+      "agent_model": "gpt-5.4"
+    }
   },
-  "turn_detection": {
-    "type": "azure_semantic_vad",
-    "threshold": 0.26,
-    "prefix_padding_ms": 300,
-    "silence_duration_ms": 220
+  "session_update": {
+    "modalities": ["text", "audio"],
+    "input_audio_transcription": {
+      "model": "azure-speech",
+      "language": "zh-CN"
+    },
+    "voice": {
+      "name": "zh-CN-Xiaoxiao:DragonHDFlashLatestNeural",
+      "type": "azure-standard"
+    },
+    "input_audio_format": "pcm16",
+    "output_audio_format": "pcm16",
+    "turn_detection": {
+      "type": "azure_semantic_vad",
+      "threshold": 0.26,
+      "prefix_padding_ms": 300,
+      "silence_duration_ms": 220
+    }
   }
 }</textarea>
                 </div>
@@ -203,7 +204,7 @@
                 </button>
               </div>
               <p id="voiceStatus">Click the microphone to start continuous voice conversation.</p>
-              <p class="voice-hint">Voice Live handles all assistant speech. Use the red button to stop.</p>
+              <p class="voice-hint">Voice Live handles ASR, Agent turn routing, and TTS audio. Use the red button to stop.</p>
             </div>
           </section>
 
@@ -331,7 +332,7 @@
               <div class="panel-title">
                 <h2>Grounding Result</h2>
               </div>
-              <pre id="searchOutput">Foundry IQ, web search, and tool results will appear here.</pre>
+              <pre id="searchOutput">Agent Knowledge is handled inside Foundry. Tool results will appear here.</pre>
             </section>
 
             <section class="panel events-panel">
@@ -345,6 +346,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260626-71" defer></script>
+    <script src="/static/app.js?v=20260706-stable-tools" defer></script>
   </body>
 </html>
