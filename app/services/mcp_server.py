@@ -13,8 +13,12 @@ from app.services.vision_service import analyze_camera_frame
 mcp = FastMCP(
     "azure-voice-live-robot-demo",
     instructions=(
-        "Robot demo tools. Use scan_environment for camera questions "
-        "and run_robot_action for simulated robot actions."
+        "Robot demo tools. Use scan_environment only when the user explicitly asks "
+        "to inspect the live camera view, the current physical scene, or objects "
+        "in front of the robot. Do not use scan_environment for documents, policies, "
+        "knowledge-base questions, web search, or questions about written content "
+        "unless the user clearly asks to inspect the camera view. Use run_robot_action "
+        "for simulated robot actions."
     ),
 )
 
@@ -24,7 +28,7 @@ async def scan_environment(
     question: str = "看看当前画面里有什么？",
     user_id: str = "demo-user",
 ) -> dict[str, Any]:
-    """Analyze the latest browser camera frame captured by the robot demo."""
+    """Analyze the latest browser camera frame for explicit live-vision requests."""
     frame = get_latest_frame()
     if not frame:
         result = {

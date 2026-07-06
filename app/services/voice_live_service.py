@@ -75,7 +75,7 @@ async def create_voice_live_session(conversation_id: str | None = None) -> dict:
                 "conversation_id": conversation_id,
                 "event_type": event_data.get("type", "session.connected"),
                 "message": f"Voice Live 已通过 {session_mode} 模式建立会话。",
-                "agent_web_tool_enabled": bool(settings.resolved_foundry_web_agent_name),
+                "agent_tools_enabled": bool(settings.resolved_voice_agent_name),
                 "duration_ms": round((time.perf_counter() - started_at) * 1000),
                 "event": event_data,
             }

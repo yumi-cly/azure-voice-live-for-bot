@@ -86,10 +86,3 @@ def get_azure_credential() -> ChainedTokenCredential:
 
 def get_foundry_credential() -> ChainedTokenCredential:
     return get_azure_credential()
-
-
-def get_blob_credential() -> tuple[object, str]:
-    settings = get_settings()
-    if settings.azure_storage_account_key:
-        return settings.azure_storage_account_key, "account_key"
-    return get_azure_credential(), "entra"

@@ -1,30 +1,24 @@
+import asyncio
 import json
 import re
 from time import perf_counter
 
-import httpx
+from azure.ai.projects import AIProjectClient
 
 from app.config import get_settings
 from app.exceptions import DemoAppError
+from app.services.azure_auth import get_foundry_credential
 from app.services.trace_store import record_trace
 
 
-def _responses_url(endpoint: str) -> str:
-    trimmed = endpoint.rstrip("/")
-    if trimmed.endswith("/responses"):
-        return trimmed
-    if trimmed.endswith("/openai/v1"):
-        return f"{trimmed}/responses"
-    return f"{trimmed}/openai/v1/responses"
+def _extract_output_text(response: object) -> str:
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
 
-
-def _extract_output_text(payload: dict) -> str:
-    if isinstance(payload.get("output_text"), str) and payload["output_text"].strip():
-        return payload["output_text"].strip()
-
-    for item in payload.get("output") or []:
-        for content in item.get("content") or []:
-            text = content.get("text")
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            text = getattr(content, "text", None)
             if isinstance(text, str) and text.strip():
                 return text.strip()
     return ""
@@ -57,8 +51,6 @@ async def analyze_camera_frame(image_base64: str, question: str, user_id: str = 
         raise DemoAppError("Camera frame must be a data:image URL.", status_code=400)
     if not settings.foundry_project_endpoint:
         raise DemoAppError("FOUNDRY_PROJECT_ENDPOINT is not configured.", status_code=400)
-    if not settings.foundry_api_key:
-        raise DemoAppError("FOUNDRY_API_KEY is not configured for vision analysis.", status_code=400)
 
     model = settings.foundry_vision_deployment or settings.foundry_model_name or "gpt-5.4"
     started_at = perf_counter()
@@ -71,16 +63,17 @@ async def analyze_camera_frame(image_base64: str, question: str, user_id: str = 
         f"用户问题：{question}"
     )
 
-    async with httpx.AsyncClient(timeout=45) as client:
-        response = await client.post(
-            _responses_url(settings.foundry_project_endpoint),
-            headers={
-                "Content-Type": "application/json",
-                "api-key": settings.foundry_api_key,
-            },
-            json={
-                "model": model,
-                "input": [
+    def call_foundry_vision() -> object:
+        project_client = AIProjectClient(
+            endpoint=settings.foundry_project_endpoint,
+            credential=get_foundry_credential(),
+            allow_preview=True,
+        )
+        try:
+            openai_client = project_client.get_openai_client()
+            return openai_client.responses.create(
+                model=model,
+                input=[
                     {
                         "role": "user",
                         "content": [
@@ -89,18 +82,19 @@ async def analyze_camera_frame(image_base64: str, question: str, user_id: str = 
                         ],
                     }
                 ],
-                "max_output_tokens": 400,
-            },
-        )
+                max_output_tokens=400,
+            )
+        finally:
+            project_client.close()
+
+    try:
+        response = await asyncio.to_thread(call_foundry_vision)
+    except Exception as exc:  # pragma: no cover - external service branch
+        raise DemoAppError(f"Foundry vision request failed: {exc}", status_code=502) from exc
 
     duration_ms = round((perf_counter() - started_at) * 1000)
-    if response.status_code >= 400:
-        raise DemoAppError(
-            f"Foundry vision request failed: HTTP {response.status_code} {response.text[:500]}",
-            status_code=502,
-        )
 
-    raw_text = _extract_output_text(response.json())
+    raw_text = _extract_output_text(response)
     if not raw_text:
         raise DemoAppError("Foundry vision response did not include output text.", status_code=502)
 

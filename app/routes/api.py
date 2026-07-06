@@ -1,25 +1,19 @@
-from fastapi import APIRouter, Response, WebSocket
+from fastapi import APIRouter, WebSocket
 
 from app.models import (
     AgentChatRequest,
-    ContextAutoSaveRequest,
-    ContextLoadRequest,
-    ContextSaveRequest,
     MediaToolRequest,
     NavigationToolRequest,
     ToolRequest,
-    TtsRequest,
     VisionFrameRequest,
     VisionLatestFrameRequest,
     VoiceSessionRequest,
 )
 from app.services.agent_service import ask_foundry_agent
 from app.services.camera_frame_store import save_latest_frame
-from app.services.memory_store import auto_save_summary, load_summary, save_summary
 from app.services.resource_profile import get_resource_profile
 from app.services.tool_service import control_media, control_navigation, get_demo_status, mock_robot_action
 from app.services.trace_store import record_trace, snapshot_traces
-from app.services.tts_service import synthesize_speech
 from app.services.vision_service import analyze_camera_frame
 from app.services.voice_live_relay import relay_voice_live_agent, voice_live_session_update
 from app.services.voice_live_service import create_voice_live_session
@@ -55,13 +49,17 @@ async def session(request: VoiceSessionRequest | None = None) -> dict:
 @router.get("/voice/config")
 def voice_config(
     voice: str = "zh-CN-Xiaoxiao:DragonHDFlashLatestNeural",
-    language: str = "zh",
+    asr_model: str = "azure-speech",
+    agent_model: str = "gpt-5.4",
+    language: str = "zh-CN",
     vad_threshold: float = 0.26,
     prefix_padding_ms: int = 300,
     silence_duration_ms: int = 220,
 ) -> dict:
     return voice_live_session_update(
         voice=voice,
+        asr_model=asr_model,
+        agent_model=agent_model,
         language=language,
         vad_threshold=vad_threshold,
         prefix_padding_ms=prefix_padding_ms,
@@ -72,12 +70,6 @@ def voice_config(
 @router.websocket("/voice/ws")
 async def voice_ws(websocket: WebSocket) -> None:
     await relay_voice_live_agent(websocket)
-
-
-@router.post("/tts/synthesize")
-async def tts_synthesize(request: TtsRequest) -> Response:
-    audio = await synthesize_speech(request.text, request.voice)
-    return Response(content=audio, media_type="audio/mpeg")
 
 
 @router.post("/vision/analyze-frame")
@@ -98,60 +90,6 @@ async def vision_latest_frame(request: VisionLatestFrameRequest) -> dict:
     )
 
 
-@router.post("/context/load")
-def context_load(request: ContextLoadRequest) -> dict:
-    result = {"user_id": request.user_id, "summary": load_summary(request.user_id)}
-    record_trace(
-        channel="grounding",
-        kind="memory_tool",
-        title="Cosmos DB memory read",
-        message=f"Loaded memory summary for {request.user_id}.",
-        payload=result,
-    )
-    return result
-
-
-@router.post("/context/save")
-def context_save(request: ContextSaveRequest) -> dict:
-    save_summary(request.user_id, request.summary)
-    record_trace(
-        channel="grounding",
-        kind="memory_tool",
-        title="Cosmos DB memory write",
-        message=f"Saved memory summary for {request.user_id}.",
-        payload={"user_id": request.user_id, "saved": True, "summary_preview": request.summary[:240]},
-    )
-    return {"ok": True}
-
-
-@router.post("/context/auto-save")
-def context_auto_save(request: ContextAutoSaveRequest) -> dict:
-    turns = [turn.model_dump() for turn in request.turns]
-    result = auto_save_summary(
-        request.user_id,
-        turns,
-        session_id=request.session_id,
-        conversation_id=request.conversation_id,
-    )
-    payload = {
-        **result,
-        "user_id": request.user_id,
-        "session_id": request.session_id,
-        "conversation_id": request.conversation_id,
-        "turn_count": len(turns),
-    }
-    record_trace(
-        channel="grounding",
-        kind="memory_tool",
-        title="Cosmos DB memory auto-save",
-        message=(
-            f"Auto-saved memory for {request.user_id}."
-            if result.get("saved")
-            else f"No stable memory detected for {request.user_id}."
-        ),
-        payload=payload,
-    )
-    return payload
 
 
 @router.post("/tools/mock-robot-action")

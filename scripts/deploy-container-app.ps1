@@ -23,12 +23,8 @@ param(
     [string]$ImageTag = "manual",
     [switch]$SkipEnvFromFile,
     [switch]$ConfigureFoundryAgent,
-    [string]$AgentModel = "gpt-5.4",
-    [string]$BaseAgentVersion = "",
-    [string]$ProjectResourceId = "",
-    [string]$FoundryIqSearchEndpoint = "",
-    [string]$FoundryIqKnowledgeBase = "",
-    [string]$FoundryIqConnectionName = "foundry-iq-kb"
+    [string]$AgentModel = "",
+    [string]$BaseAgentVersion = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,6 +45,29 @@ Set-Location $ProjectRoot
 
 function Invoke-Az {
     & $az @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "Azure CLI command failed: az $($args -join ' ')"
+    }
+}
+
+function Test-AzCommand {
+    param([string[]]$CommandArgs)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+
+        & $az @CommandArgs 1>$null 2>$null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+    }
 }
 
 function Read-EnvFile {
@@ -97,9 +116,44 @@ function Resolve-Python {
     }
     $python = (Get-Command python -ErrorAction SilentlyContinue).Source
     if ($python) {
-        return $python
+        Write-Host "==> Creating local Python virtual environment: .venv" -ForegroundColor Cyan
+        & $python -m venv (Join-Path $ProjectRoot ".venv")
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
+            throw "Failed to create .venv. Create it manually or add a working Python to PATH before using -ConfigureFoundryAgent."
+        }
+        return $venvPython
     }
     throw "Python was not found. Create .venv or add python to PATH before using -ConfigureFoundryAgent."
+}
+
+function Ensure-FoundryConfigureDependencies {
+    param([string]$Python)
+
+    $checkScript = "import azure.ai.projects; import azure.identity; import dotenv; import pydantic_settings"
+    & $Python -c $checkScript 1>$null 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        return
+    }
+
+    Write-Host "==> Installing local Python dependencies for Foundry Agent configuration" -ForegroundColor Cyan
+    & $Python -m pip install --disable-pip-version-check --upgrade pip
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to upgrade pip in local Python environment."
+    }
+
+    & $Python -m pip install --disable-pip-version-check `
+        python-dotenv `
+        pydantic-settings `
+        azure-identity `
+        azure-ai-projects
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install Python dependencies for Foundry Agent configuration."
+    }
+
+    & $Python -c $checkScript 1>$null 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python dependencies for Foundry Agent configuration are still missing after installation."
+    }
 }
 
 Invoke-Az account set --subscription $SubscriptionId
@@ -109,12 +163,12 @@ if ($groupExists -ne "true") {
     Invoke-Az group create --name $ResourceGroup --location $Location --output none
 }
 
-$acrExists = Invoke-Az acr show --name $AcrName --resource-group $ResourceGroup --query "name" --output tsv 2>$null
+$acrExists = Test-AzCommand -CommandArgs @("acr", "show", "--name", $AcrName, "--resource-group", $ResourceGroup)
 if (-not $acrExists) {
     Invoke-Az acr create --name $AcrName --resource-group $ResourceGroup --location $Location --sku Basic --admin-enabled false --output none
 }
 
-$acaEnvExists = Invoke-Az containerapp env show --name $ContainerAppEnvironment --resource-group $ResourceGroup --query "name" --output tsv 2>$null
+$acaEnvExists = Test-AzCommand -CommandArgs @("containerapp", "env", "show", "--name", $ContainerAppEnvironment, "--resource-group", $ResourceGroup)
 if (-not $acaEnvExists) {
     Invoke-Az containerapp env create `
         --name $ContainerAppEnvironment `
@@ -172,7 +226,7 @@ if ($ManagedIdentityClientId) {
     $envValues += "AZURE_CLIENT_ID=$ManagedIdentityClientId"
 }
 
-$appExists = Invoke-Az containerapp show --name $ContainerAppName --resource-group $ResourceGroup --query "name" --output tsv 2>$null
+$appExists = Test-AzCommand -CommandArgs @("containerapp", "show", "--name", $ContainerAppName, "--resource-group", $ResourceGroup)
 if (-not $appExists) {
     $createArgs = @(
         "containerapp", "create",
@@ -231,17 +285,12 @@ Invoke-Az containerapp update `
 
 if ($ConfigureFoundryAgent) {
     $python = Resolve-Python
-    if (-not $ProjectResourceId -and $fileValues.Contains("FOUNDRY_PROJECT_RESOURCE_ID")) {
-        $ProjectResourceId = $fileValues["FOUNDRY_PROJECT_RESOURCE_ID"]
+    Ensure-FoundryConfigureDependencies -Python $python
+    if (-not $AgentModel -and $fileValues.Contains("FOUNDRY_MODEL_NAME")) {
+        $AgentModel = $fileValues["FOUNDRY_MODEL_NAME"]
     }
-    if (-not $FoundryIqSearchEndpoint -and $fileValues.Contains("FOUNDRY_IQ_SEARCH_ENDPOINT")) {
-        $FoundryIqSearchEndpoint = $fileValues["FOUNDRY_IQ_SEARCH_ENDPOINT"]
-    }
-    if (-not $FoundryIqKnowledgeBase -and $fileValues.Contains("FOUNDRY_IQ_KNOWLEDGE_BASE")) {
-        $FoundryIqKnowledgeBase = $fileValues["FOUNDRY_IQ_KNOWLEDGE_BASE"]
-    }
-    if ($fileValues.Contains("FOUNDRY_IQ_CONNECTION_NAME") -and ($FoundryIqConnectionName -eq "foundry-iq-kb")) {
-        $FoundryIqConnectionName = $fileValues["FOUNDRY_IQ_CONNECTION_NAME"]
+    if (-not $AgentModel) {
+        throw "-AgentModel or FOUNDRY_MODEL_NAME is required when -ConfigureFoundryAgent is used. Use the actual Foundry model deployment name."
     }
     $configureArgs = @(
         "scripts\configure_foundry_mcp_agent.py",
@@ -251,19 +300,6 @@ if ($ConfigureFoundryAgent) {
     )
     if ($BaseAgentVersion) {
         $configureArgs += @("--base-version", $BaseAgentVersion)
-    }
-    if ($FoundryIqKnowledgeBase) {
-        if (-not $ProjectResourceId) {
-            throw "-ProjectResourceId is required when -FoundryIqKnowledgeBase is provided."
-        }
-        $configureArgs += @(
-            "--project-resource-id", $ProjectResourceId,
-            "--foundry-iq-knowledge-base", $FoundryIqKnowledgeBase,
-            "--foundry-iq-connection-name", $FoundryIqConnectionName
-        )
-        if ($FoundryIqSearchEndpoint) {
-            $configureArgs += @("--foundry-iq-search-endpoint", $FoundryIqSearchEndpoint)
-        }
     }
 
     $configureOutput = & $python @configureArgs
@@ -281,7 +317,7 @@ if ($ConfigureFoundryAgent) {
     Invoke-Az containerapp update `
         --name $ContainerAppName `
         --resource-group $ResourceGroup `
-        --set-env-vars "MCP_SERVER_URL=$mcpUrl" "FOUNDRY_WEB_AGENT_VERSION=$configuredAgentVersion" `
+        --set-env-vars "MCP_SERVER_URL=$mcpUrl" "FOUNDRY_AGENT_VERSION=$configuredAgentVersion" `
         --output none
 }
 
